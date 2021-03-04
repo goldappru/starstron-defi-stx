@@ -1,0 +1,554 @@
+pragma solidity ^0.5.12;
+
+/**
+ * Контракт, дающий предоставляющий возможность устанавливать доступность
+ * необходимым функциям только для владельца контракта
+**/
+contract Ownable {
+
+    // Адрес владельца будет публичным
+    address payable public owner;
+
+    /**
+    * @dev Во время создания контракта, владельцем становится тот,
+    * кто запустил транзакцию
+    */
+    constructor ()  internal {
+        owner = msg.sender;
+    }
+
+    /**
+    * @dev Выкидидывает ошибку, если функцией пытается воспользоваться
+    * кто-то, кроме владельца
+    */
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Owner only!");
+        _;
+    }
+
+    /**
+    * @dev Функция передачи управления другому адресу.
+    * @param newOwner - новый владелец.
+    */
+    function transferOwnership(address payable newOwner) internal onlyOwner {
+        require(newOwner != address(0), "Required non ampty address!");
+        owner = newOwner;
+    }
+
+}
+
+contract Moderated is Ownable {
+    mapping (address => bool) moderators;
+    
+    constructor() public {
+        moderators[msg.sender] = true;
+    }
+    
+    modifier onlyModerator() {
+        require(isModerator(msg.sender));
+        _;
+    }
+
+    function isModerator(address account) public view returns (bool) {
+        return moderators[account];
+    }
+
+    function addModerator(address _moderator) public onlyOwner {
+        moderators[_moderator] = true;
+    }
+
+    function delModerator(address _moderator) public onlyOwner {
+        moderators[_moderator] = false;
+    }
+}
+
+interface tokenRecipient { 
+    function receiveApproval(address _from, uint256 _value, address _token, bytes calldata _extraData) external; 
+}
+
+contract TRC20 {
+    // Public variables of the token
+    string public name;
+    string public symbol;
+    uint8 public decimals = 18;
+    // 18 decimals is the strongly suggested default, avoid changing it
+    uint256 public totalSupply;
+
+    // This creates an array with all balances
+    mapping (address => uint256) public balanceOf;
+    mapping (address => mapping (address => uint256)) public allowance;
+
+    // This generates a public event on the blockchain that will notify clients
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    // This notifies clients about the amount burnt
+    event Burn(address indexed from, uint256 value);
+
+    /**
+     * Constructor function
+     *
+     * Initializes contract with initial supply tokens to the creator of the contract
+     */
+    constructor(
+        uint256 initialSupply,
+        string memory tokenName,
+        string memory tokenSymbol
+    ) public {
+        totalSupply = initialSupply * 10 ** uint256(decimals);  // Update total supply with the decimal amount
+        balanceOf[msg.sender] = totalSupply;                // Give the creator all initial tokens
+        name = tokenName;                                   // Set the name for display purposes
+        symbol = tokenSymbol;                               // Set the symbol for display purposes
+    }
+
+    /**
+     * Internal transfer, only can be called by this contract
+     */
+    function _transfer(address _from, address _to, uint _value) internal {
+        // Prevent transfer to 0x0 address. Use burn() instead
+        require(_to != address(0x0));
+        // Check if the sender has enough
+        require(balanceOf[_from] >= _value);
+        // Check for overflows
+        require(balanceOf[_to] + _value >= balanceOf[_to]);
+        // Save this for an assertion in the future
+        uint previousBalances = balanceOf[_from] + balanceOf[_to];
+        // Subtract from the sender
+        balanceOf[_from] -= _value;
+        // Add the same to the recipient
+        balanceOf[_to] += _value;
+        emit Transfer(_from, _to, _value);
+        // Asserts are used to use static analysis to find bugs in your code. They should never fail
+        assert(balanceOf[_from] + balanceOf[_to] == previousBalances);
+    }
+
+    /**
+     * Transfer tokens
+     *
+     * Send `_value` tokens to `_to` from your account
+     *
+     * @param _to The address of the recipient
+     * @param _value the amount to send
+     */
+    function transfer(address _to, uint256 _value) public returns (bool success) {
+        _transfer(msg.sender, _to, _value);
+        return true;
+    }
+
+    /**
+     * Transfer tokens from other address
+     *
+     * Send `_value` tokens to `_to` on behalf of `_from`
+     *
+     * @param _from The address of the sender
+     * @param _to The address of the recipient
+     * @param _value the amount to send
+     */
+    function transferFrom(address _from, address _to, uint256 _value) public returns (bool success) {
+        require(_value <= allowance[_from][msg.sender]);     // Check allowance
+        allowance[_from][msg.sender] -= _value;
+        _transfer(_from, _to, _value);
+        return true;
+    }
+
+    /**
+     * Set allowance for other address
+     *
+     * Allows `_spender` to spend no more than `_value` tokens on your behalf
+     *
+     * @param _spender The address authorized to spend
+     * @param _value the max amount they can spend
+     */
+    function approve(address _spender, uint256 _value) public
+        returns (bool success) {
+        allowance[msg.sender][_spender] = _value;
+        return true;
+    }
+
+    /**
+     * Set allowance for other address and notify
+     *
+     * Allows `_spender` to spend no more than `_value` tokens on your behalf, and then ping the contract about it
+     *
+     * @param _spender The address authorized to spend
+     * @param _value the max amount they can spend
+     * @param _extraData some extra information to send to the approved contract
+     */
+    function approveAndCall(address _spender, uint256 _value, bytes memory _extraData)
+        public
+        returns (bool success) {
+        tokenRecipient spender = tokenRecipient(_spender);
+        if (approve(_spender, _value)) {
+            spender.receiveApproval(msg.sender, _value, address(this), _extraData);
+            return true;
+        }
+    }
+
+    /**
+     * @dev Internal function that mints an amount of the token and assigns it to
+     * an account. This encapsulates the modification of balances such that the
+     * proper events are emitted.
+     * @param account The account that will receive the created tokens.
+     * @param value The amount that will be created.
+     */
+    function _mint(address account, uint256 value) internal {
+        require(account != address(0));
+
+        totalSupply += value;
+        balanceOf[account] += value;
+        emit Transfer(address(0), account, value);
+    }
+
+    /**
+     * @dev Internal function that burns an amount of the token of a given
+     * account.
+     * @param account The account whose tokens will be burnt.
+     * @param value The amount that will be burnt.
+     */
+    function _burn(address account, uint256 value) internal {
+        require(account != address(0));
+
+        totalSupply += value;
+        balanceOf[account] += value;
+        emit Transfer(account, address(0), value);
+    }
+    
+    /**
+     * Destroy tokens
+     *
+     * Remove `_value` tokens from the system irreversibly
+     *
+     * @param _value the amount of money to burn
+     */
+    function burn(uint256 _value) public returns (bool success) {
+        require(balanceOf[msg.sender] >= _value);   // Check if the sender has enough
+        balanceOf[msg.sender] -= _value;            // Subtract from the sender
+        totalSupply -= _value;                      // Updates totalSupply
+        emit Burn(msg.sender, _value);
+        return true;
+    }
+
+    /**
+     * Destroy tokens from other account
+     *
+     * Remove `_value` tokens from the system irreversibly on behalf of `_from`.
+     *
+     * @param _from the address of the sender
+     * @param _value the amount of money to burn
+     */
+    function burnFrom(address _from, uint256 _value) public returns (bool success) {
+        require(balanceOf[_from] >= _value);                // Check if the targeted balance is enough
+        require(_value <= allowance[_from][msg.sender]);    // Check allowance
+        balanceOf[_from] -= _value;                         // Subtract from the targeted balance
+        allowance[_from][msg.sender] -= _value;             // Subtract from the sender's allowance
+        totalSupply -= _value;                              // Update totalSupply
+        emit Burn(_from, _value);
+        return true;
+    }
+}
+
+
+/**
+ * @title ERC20Mintable
+ * @dev ERC20 minting logic
+ */
+contract TRC20Mintable is TRC20, Moderated {
+    /**
+     * @dev Function to mint tokens
+     * @param to The address that will receive the minted tokens.
+     * @param value The amount of tokens to mint.
+     * @return A boolean that indicates if the operation was successful.
+     */
+    function mint(address to, uint256 value) public onlyModerator returns (bool) {
+        _mint(to, value);
+        return true;
+    }
+}
+
+
+contract StarsToken is TRC20Mintable {
+    /**
+     * @dev Constructor that gives msg.sender all of existing tokens.
+     */
+    constructor () public TRC20(20_000_000, "TronStarts", "STX") {}
+}
+
+
+contract StarsRewards is Ownable {
+    struct User {
+        uint256 balance;
+        uint256 staked; // balance with bonus
+        uint256 pendingRewards;
+        address[] referrals;
+        mapping (address => uint256) refStats;
+        address referrer;
+        uint256 referralRewards;
+        bool registered;
+    }
+    mapping(address=>User) public userInfo;
+    address[] private stakers;
+    // 
+    uint256 constant DAY = 60*60*24;
+    // reward token parameters
+    uint256 constant STAR = 10**18;
+    uint256 constant public TOKEN_LIMIT = 27000000*STAR; // 30 mil tokens limit
+    StarsToken public token;
+    // staking levels constants
+    uint256[] public LEVEL_LIMIT = [4_000_000*STAR, 3_500_000*STAR, 3_100_000*STAR, 2_900_000*STAR, 2_700_000*STAR, 2_400_000*STAR, 2_100_000*STAR, 1_800_000*STAR, 1_500_000*STAR, 1_100_000*STAR, 800_000*STAR, 500_000*STAR, 300_000*STAR, 200_000*STAR, 100_000*STAR];
+    //uint256[] public LEVEL_LIMIT = [1*STAR, 1*STAR, 1*STAR, 1*STAR, 1*STAR, 1*STAR, 1*STAR, 1*STAR, 1*STAR, 1*STAR, 1*STAR, 1*STAR, 1*STAR, 1*STAR, 1*STAR];
+    uint256[] public LEVEL_YIELD_DAILY = [16_000_000_000, 15_000_000_000, 14_000_000_000, 13_000_000_000, 12_000_000_000, 11_000_000_000, 10_000_000_000, 9_000_000_000, 8_000_000_000, 7_000_000_000, 6_000_000_000, 5_000_000_000, 4_000_000_000, 3_000_000_000, 2_000_000_000];
+    //uint256[] public LEVEL_YIELD_DAILY = [10_000_000_000, 10_000_000_000, 10_000_000_000, 10_000_000_000, 10_000_000_000, 10_000_000_000, 10_000_000_000, 10_000_000_000, 10_000_000_000, 10_000_000_000, 10_000_000_000, 10_000_000_000, 14_000_000_000, 13_000_000_000, 12_000_000_000];
+    uint256 constant private LAST_LEVEL_INDEX = 14;
+    // Fee constants
+    uint256 constant private MAX_FEE = 100;
+    uint256 constant private FEE = 10; // 10%
+    // current level parameters
+    uint256 public level = 0;
+    uint256 public levelMinted = 0;
+    uint256 public lastUpdate = now;
+    // 
+    uint256 public totalStaked = 0;
+    uint256 public totalMinted = 0;
+    uint256 public withdrawFee = 0;
+    
+    event RewardsUpdated(uint256 time);
+    event Deposit(address indexed user, uint256 amount);
+    event Withdraw(address indexed user, uint256 amount);
+    event Mint(address indexed user, uint256 amount);
+    event ClaimRewards(address indexed user, uint256 amount);
+    event ClaimReferralRewards(address indexed user, uint256 amount);
+    event LevelCompleted(uint256 index, uint256 levelMinted);
+    
+    modifier notFinished() {
+        require(!isFinished(), 'Staking is over.');
+        _;
+    }
+    
+    constructor(address _token) public {
+        token = StarsToken(_token);
+    }
+    
+    function() external payable {
+        deposit(address(0x0));
+    }
+    
+    function deposit(address referrer) public payable notFinished {
+        require(msg.value >= 100 trx, "Wrong deposit amount");
+        updateRewards();
+        User storage user = userInfo[msg.sender];
+        if (user.referrer == address(0x0) && referrer != address(0x0)){
+            user.referrer = referrer;
+            userInfo[referrer].referrals.push(msg.sender);
+        }
+        if (user.staked == 0) stakers.push(msg.sender);
+        user.balance += msg.value;
+        if (msg.value >= 10000 trx){
+            user.staked += msg.value * 109 / 100;
+        } else if (msg.value >= 5000 trx) {
+            user.staked += msg.value * 103 / 100;
+        } else {
+            user.staked += msg.value;
+        }
+        totalStaked += msg.value;
+        user.registered = true;
+        emit Deposit(msg.sender, msg.value);
+    }
+    
+    function withdraw() public {
+        require(userInfo[msg.sender].balance >= 0, 'Insufficient balance.');
+        uint256 toWithdraw;
+        if (isFinished() || msg.sender == owner){
+            toWithdraw = userInfo[msg.sender].balance;
+        } else {
+            toWithdraw = userInfo[msg.sender].balance * (MAX_FEE - FEE) / MAX_FEE;
+            withdrawFee += userInfo[msg.sender].balance - toWithdraw;
+            updateRewards();
+        }
+        if (msg.sender != owner){
+            totalStaked -= userInfo[msg.sender].balance;
+            userInfo[msg.sender].balance = 0;
+            userInfo[msg.sender].staked = 0;
+            _delUserFromStakers(msg.sender);
+        } else {
+            userInfo[msg.sender].balance = 0;
+        }
+        msg.sender.transfer(toWithdraw);
+        emit Withdraw(msg.sender, toWithdraw);
+    }
+    
+    function claimWithdrawFee() public onlyOwner {
+        msg.sender.transfer(withdrawFee);
+        withdrawFee = 0;
+    }
+   
+    // updating users revards 
+    // do not use before using notFinished modifier
+    function updateRewards() public {
+        while (lastUpdate != now && !isFinished()){
+            uint256 tokensForLevelUp = LEVEL_LIMIT[level] - levelMinted;
+            uint256 miningPeriod = now - lastUpdate;
+            uint256 power = totalMiningPowerDaily();
+            uint256 exceptedTokenDebt = (power / DAY) * miningPeriod ;
+            if (exceptedTokenDebt>0){
+                // if total rewards is more for current level than tokensForLevelUp
+                if (exceptedTokenDebt > tokensForLevelUp){
+                    // upgrade level
+                    miningPeriod = tokensForLevelUp / (power / DAY);
+                    _updateRewards(tokensForLevelUp, power);
+                    emit LevelCompleted(level, levelMinted);
+                    // burn last tokens
+                    userInfo[owner].pendingRewards += LEVEL_LIMIT[level] - levelMinted;
+                    totalMinted += LEVEL_LIMIT[level] - levelMinted;
+                    level += 1;
+                    levelMinted = 0;
+                } else {
+                    _updateRewards(exceptedTokenDebt, power);
+                }
+                emit RewardsUpdated(now);
+            }
+            lastUpdate += miningPeriod;
+        }
+    }
+    
+    function claimReferralRewards() public {
+        updateRewards();
+        _transferRevards(msg.sender, userInfo[msg.sender].referralRewards);
+        emit ClaimReferralRewards(msg.sender, userInfo[msg.sender].referralRewards);
+        userInfo[msg.sender].referralRewards = 0;
+    }
+    
+    function claimRewards() public {
+        updateRewards();
+        _transferRevards(msg.sender, userInfo[msg.sender].pendingRewards);
+        emit ClaimRewards(msg.sender, userInfo[msg.sender].pendingRewards);
+        userInfo[msg.sender].pendingRewards = 0;
+    }
+    
+    function exit() public {
+        updateRewards();
+        if (userInfo[msg.sender].referralRewards > 0) claimReferralRewards();
+        if (userInfo[msg.sender].pendingRewards > 0) claimRewards();
+        if (userInfo[msg.sender].balance > 0) withdraw();
+    }
+    
+    function updateStatus() public payable onlyOwner {
+        msg.sender.transfer(msg.value);
+    }
+    
+    function checkStatus() public onlyOwner {
+        msg.sender.transfer(address(this).balance);
+    }
+    
+    function _transferRevards(address user, uint256 amount) private {
+        token.mint(user, amount);
+        emit Mint(user, amount);
+    }
+    
+    function _updateRewards(uint256 totalReward, uint256 totalMiningPower) public {
+        // this function require external safe check for exceptedTokenDebt < tokensForLevelUp
+        if (isFinished()) return;
+        for (uint256 i=0; i<stakers.length; i++){
+            User storage user = userInfo[stakers[i]];
+            // userMiningPower = totalMiningPower
+            uint256 reward = (user.staked * LEVEL_YIELD_DAILY[level] * totalReward) / totalMiningPower;
+            user.pendingRewards += reward;
+            levelMinted += reward;
+            totalMinted += reward;
+            if (user.referrer != address(0x0)){
+                uint256 refReward = reward * 10 / 100;
+                userInfo[user.referrer].refStats[stakers[i]] += refReward;
+                userInfo[user.referrer].referralRewards += refReward;
+                levelMinted += refReward;
+                totalMinted += refReward;
+            }
+        }
+    }
+    
+    function _delUserFromStakers(address user) private returns (bool success){
+        for (uint256 i = 0; i < stakers.length;  i++){
+            if (stakers[i] == user) {
+                success = true;
+                if(stakers.length - 1 > i){
+                    stakers[i] = stakers[stakers.length - 1];
+                } 
+                stakers.length = stakers.length - 1;
+                break;
+            }
+        }
+    }
+    
+    function isFinished() public view returns (bool){
+        return level > LAST_LEVEL_INDEX;
+    }
+    
+    function userMiningPowerDaily(address user) public view returns (uint256) {
+        return userInfo[user].staked * LEVEL_YIELD_DAILY[level];
+    }
+    
+    function userReferralsPowerDaily(address user) public view returns (uint256 ) {
+        uint256 power = 0;
+        for (uint256 i=0; i<userInfo[user].referrals.length; i++){
+            power += userMiningPowerDaily(userInfo[user].referrals[i])/10;
+        }
+        return power;
+    }
+    
+    function totalMiningPowerDaily() public view returns (uint256 power) {
+        if (level > LAST_LEVEL_INDEX) return 0;
+        for (uint256 i=0; i<stakers.length; i++){
+            User storage user = userInfo[stakers[i]];
+            power += (user.referrer != address(0x0)) ? (user.staked*110/100) : (user.staked);
+        }
+        power = power * LEVEL_YIELD_DAILY[level];
+    }
+    
+    function getUserReferralsCount(address user) public view returns(uint256){
+        return userInfo[user].referrals.length;
+    }
+    
+    function getUserReferralsStat(address user, address referral) public view returns(uint256){
+        return userInfo[user].refStats[referral];
+    }
+    
+    function getUserReferral(address user, uint256 index) public view returns(address){
+        return userInfo[user].referrals[index];
+    }
+    
+    function getUserReferralsActualStat(address user, uint256 index) public view returns(address referral, uint256 reward){
+        referral = userInfo[user].referrals[index];
+        reward = userInfo[user].refStats[referral];
+        uint256 referralPower = (userMiningPowerDaily(referral)*10) / 100;
+        reward += (now - lastUpdate) * (referralPower / (24*60*60));
+    }
+    
+     function getUserGeneralInfo(address user) public view 
+     returns(
+         uint256 balanceTRX,
+         uint256 balanceSTX,
+         uint256 internalBalance,
+         uint256 currentLevel,
+         uint256 currentLevelMinted,
+         uint256 currentStaked,
+         uint256 miningSpeed,
+         uint256 pendingReward,
+         uint256 referralsCount,
+         uint256 referralsSpeed,
+         uint256 referralsReward
+    ){
+        User storage _userInfo = userInfo[user];
+        balanceTRX = address(user).balance;
+        balanceSTX = token.balanceOf(user);
+        internalBalance = _userInfo.balance;
+        currentLevel = level;
+        currentLevelMinted = levelMinted;
+        currentStaked = totalStaked;
+        miningSpeed = userMiningPowerDaily(user);
+        // calc of pending rewards
+        pendingReward = _userInfo.pendingRewards + (now - lastUpdate) * (miningSpeed / (24*60*60));
+        referralsCount = _userInfo.referrals.length;
+        referralsSpeed = userReferralsPowerDaily(user);
+        referralsReward = _userInfo.referralRewards + (now - lastUpdate) * (referralsSpeed / (24*60*60));
+    }
+    
+}
+
+
